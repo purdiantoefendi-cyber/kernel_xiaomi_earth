@@ -1,0 +1,113 @@
+name: Transfer Custom Files Between Repos and Branches
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Repository Sumber (Format: owner/repo, contoh: torvalds/linux)'
+        required: true
+        type: string
+        default: 'DianTk/repo-sumber'
+      source_branch:
+        description: 'Branch Sumber (Tempat file custom berada)'
+        required: true
+        type: string
+        default: 'main'
+      target_branch:
+        description: 'Branch Tujuan (Tempat file akan dimasukkan di repo ini)'
+        required: true
+        type: string
+        default: 'diantk2'
+      file_list:
+        description: 'Daftar File (Paste di sini. Pisahkan dengan Spasi atau Enter)'
+        required: true
+        type: string
+        default: 'crypto/wkdm_lz4hc.c block/mq_gamer.c'
+      commit_message:
+        description: 'Nama / Pesan Commit'
+        required: true
+        type: string
+        default: 'feat: add custom performance files from external repo'
+      commit_author:
+        description: 'Nama Pembuat Commit (Author)'
+        required: true
+        type: string
+        default: 'DianTk'
+
+jobs:
+  transfer-files:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout Target Branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch }}
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - name: ⚙️ Konfigurasi Git User
+        run: |
+          git config --global user.name "${{ inputs.commit_author }}"
+          git config --global user.email "bot@github.action.com"
+          git config --global --add safe.directory '*'
+
+      - name: 🔄 Tarik File dari Repo Eksternal & Pertahankan Folder
+        env:
+          FILE_LIST_INPUT: ${{ inputs.file_list }}
+          # Token ditambahkan ke URL agar bisa membaca Private Repo (jika ada PAT_TOKEN)
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+        run: |
+          SOURCE_REPO="${{ inputs.source_repo }}"
+          SOURCE_BRANCH="${{ inputs.source_branch }}"
+          
+          echo "Mengambil data dari https://github.com/$SOURCE_REPO branch $SOURCE_BRANCH..."
+          # Fetch langsung dari URL repositori eksternal
+          REPO_URL="https://${GITHUB_TOKEN}@github.com/${SOURCE_REPO}.git"
+          git fetch "$REPO_URL" "$SOURCE_BRANCH"
+
+          # Membaca daftar file
+          mapfile -t FILES < <(echo "$FILE_LIST_INPUT" | tr ' ' '\n' | grep -v '^$')
+
+          echo "========================================"
+          echo "Memulai Transfer ${#FILES[@]} File dari $SOURCE_REPO..."
+          echo "========================================"
+
+          SUCCESS_COUNT=0
+          FAIL_COUNT=0
+
+          for file in "${FILES[@]}"; do
+            file=$(echo "$file" | tr -d '\r')
+            if [ -z "$file" ]; then continue; fi
+
+            # Mengecek dan checkout file dari FETCH_HEAD (referensi hasil fetch eksternal)
+            if git ls-tree -r FETCH_HEAD --name-only | grep -q "^$file$"; then
+              git checkout FETCH_HEAD -- "$file"
+              echo "✅ Berhasil ditarik: $file"
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            else
+              echo "⚠️ Lewati (Tidak ada di $SOURCE_REPO branch $SOURCE_BRANCH): $file"
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+          done
+
+          echo "========================================"
+          echo "📊 Ringkasan: $SUCCESS_COUNT berhasil, $FAIL_COUNT dilewati."
+          echo "========================================"
+
+      - name: 🚀 Commit dan Push ke Target Branch
+        run: |
+          TARGET_BRANCH="${{ inputs.target_branch }}"
+          COMMIT_MSG="${{ inputs.commit_message }}"
+
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "Mendeteksi perubahan, menyiapkan commit..."
+            git add .
+            git commit -m "$COMMIT_MSG"
+            git push origin "$TARGET_BRANCH"
+            echo "✅ Selesai! Semua file berhasil dimasukkan ke branch $TARGET_BRANCH."
+          else
+            echo "ℹ️ Tidak ada perubahan. File di branch $TARGET_BRANCH sudah sama persis dengan sumber."
+          fi
